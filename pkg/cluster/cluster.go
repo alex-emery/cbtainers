@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/aemery-cb/cbtainers/pkg/client"
+	"github.com/aemery-cb/cbtainers/pkg/util"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
@@ -44,8 +45,8 @@ func (opts *Options) Run() (*CouchbaseCluster, error) {
 	if err := client.CleanUpCBServers(ctx, opts.Prefix); err != nil {
 		return nil, err
 	}
-	err = client.DeleteProxy(ctx)
 
+	err = client.DeleteProxy(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -122,16 +123,16 @@ func (opts *Options) Run() (*CouchbaseCluster, error) {
 		return client.CleanUpCBServers(ctx, opts.Prefix)
 	})
 
-	// ipAddr := containers[0].NetworkSettings.Networks[networkName].IPAddress
-	// err = client.RunProxy(ctx, cbNetwork, "8091", ipAddr, "8091")
-	// if err != nil {
-	// return nil, err
-	// }
+	ipAddr := containers[0].NetworkSettings.Networks[networkName].IPAddress
+	err = client.RunProxy(ctx, cbNetwork, "8091", ipAddr, "8091")
+	if err != nil {
+		return nil, err
+	}
 
-	// err = util.WaitUntilReady("localhost")
-	// if err != nil {
-	// return nil, err
-	// }
+	err = util.WaitUntilReady("localhost")
+	if err != nil {
+		return nil, err
+	}
 
 	for _, container := range containers {
 		err := client.InitCBNode(ctx, container.ID, clusterName, opts.Username, opts.Password)
