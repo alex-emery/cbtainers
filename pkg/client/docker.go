@@ -41,12 +41,13 @@ func (cli *CBDockerClient) JoinCBCluster(ctx context.Context, containerID string
 	}
 
 	fn := func() error {
-		return cli.ExecCmd(ctx, containerID, cmd)
+		_, err := cli.ExecCmd(ctx, containerID, cmd)
+		return err
 	}
 	return util.WithRetry(fn)
 }
 
-func (cli *CBDockerClient) InitCBNode(ctx context.Context, id string, clusterName, username, password string) error {
+func (cli *CBDockerClient) InitCBNode(ctx context.Context, containerID string, clusterName, username, password string) error {
 	cmd := []string{
 		"couchbase-cli",
 		"cluster-init",
@@ -64,7 +65,11 @@ func (cli *CBDockerClient) InitCBNode(ctx context.Context, id string, clusterNam
 		"--index-storage-setting", "default",
 	}
 
-	return cli.ExecCmd(ctx, id, cmd)
+	fn := func() error {
+		_, err := cli.ExecCmd(ctx, containerID, cmd)
+		return err
+	}
+	return util.WithRetry(fn)
 }
 
 func (cli *CBDockerClient) GetCBServerContainers(ctx context.Context, clusterPrefix string) ([]types.Container, error) {

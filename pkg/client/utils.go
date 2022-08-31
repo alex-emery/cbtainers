@@ -11,19 +11,19 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
-func (cli *CBDockerClient) ExecCmd(ctx context.Context, id string, cmd []string) error {
-	cresp, err := cli.ContainerExecCreate(ctx, id, types.ExecConfig{
+func (cli *CBDockerClient) ExecCmd(ctx context.Context, containerID string, cmd []string) (string, error) {
+	cresp, err := cli.ContainerExecCreate(ctx, containerID, types.ExecConfig{
 		AttachStderr: true,
 		AttachStdout: true,
 		Cmd:          cmd,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	aresp, err := cli.ContainerExecAttach(ctx, cresp.ID, types.ExecStartCheck{})
 	if err != nil {
-		return err
+		return "", err
 	}
 	// copied from https://github.com/moby/moby/blob/master/integration/internal/container/exec.go
 	defer aresp.Close()
@@ -39,30 +39,30 @@ func (cli *CBDockerClient) ExecCmd(ctx context.Context, id string, cmd []string)
 	select {
 	case err := <-outputDone:
 		if err != nil {
-			return err
+			return "", err
 		}
 		break
 
 	case <-ctx.Done():
-		return ctx.Err()
+		return "", ctx.Err()
 	}
 
 	// get the exit code
 	iresp, err := cli.ContainerExecInspect(ctx, cresp.ID)
 	if err != nil {
-		return err
+		return "", err
 	}
-	fmt.Println(outBuf.String())
-	fmt.Println(errBuf.String())
+	// fmt.Println(outBuf.String())
+	// fmt.Println(errBuf.String())
 	if iresp.ExitCode != 0 {
-		return fmt.Errorf("command did not successfully exit: %d", iresp.ExitCode)
+		return "", fmt.Errorf("command did not successfully exit: %d", iresp.ExitCode)
 	}
 
-	return nil
+	return outBuf.String(), nil
 }
 
 func (cli *CBDockerClient) ImagePullAndWait(ctx context.Context, imageName string, opts types.ImagePullOptions) error {
-	out, err := cli.ImagePull(ctx, "verb/socat", types.ImagePullOptions{})
+	out, err := cli.ImagePull(ctx, imageName, types.ImagePullOptions{})
 	if err != nil {
 		return err
 	}
