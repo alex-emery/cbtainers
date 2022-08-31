@@ -20,16 +20,11 @@ import (
 )
 
 type Options struct {
-	NetworkName string
-	Username    string
-	Password    string
-	ClusterName string
-	ImageName   string
-	NumServers  int
-}
-
-var opts = Options{
-	NetworkName: "cb-server-network",
+	Username   string
+	Password   string
+	ImageName  string
+	NumServers int
+	Prefix     string
 }
 
 func WithRetry(fn func() error) error {
@@ -45,8 +40,7 @@ func WithRetry(fn func() error) error {
 	return finalErr
 }
 
-func ExecCmd(cli *client.Client, id string, cmd []string) error {
-	ctx := context.Background()
+func ExecCmd(ctx context.Context, cli *client.Client, id string, cmd []string) error {
 	cresp, err := cli.ContainerExecCreate(ctx, id, types.ExecConfig{
 		AttachStderr: true,
 		AttachStdout: true,
@@ -96,32 +90,32 @@ func ExecCmd(cli *client.Client, id string, cmd []string) error {
 	return nil
 }
 
-func JoinCBCluster(cli *client.Client, containerID string, servers []string) error {
+func JoinCBCluster(ctx context.Context, cli *client.Client, containerID string, servers []string, username, password string) error {
 	fmt.Printf("Container ID %s is joining %s\n", containerID, strings.Join(servers, ", "))
 	cmd := []string{
 		"couchbase-cli",
 		"server-add",
 		"--cluster", "127.0.0.1",
-		"--username", opts.Username,
-		"--password", opts.Password,
+		"--username", username,
+		"--password", password,
 		"--server-add", strings.Join(servers, ","),
-		"--server-add-username", opts.Username,
-		"--server-add-password", opts.Password,
+		"--server-add-username", username,
+		"--server-add-password", password,
 	}
 
 	fn := func() error {
-		return ExecCmd(cli, containerID, cmd)
+		return ExecCmd(ctx, cli, containerID, cmd)
 	}
 	return WithRetry(fn)
 }
 
-func InitCBNode(cli *client.Client, id string) error {
+func InitCBNode(ctx context.Context, cli *client.Client, id string, clusterName, username, password string) error {
 	cmd := []string{
 		"couchbase-cli",
 		"cluster-init",
 		"-c", "127.0.0.1",
-		"--cluster-username", opts.Username,
-		"--cluster-password", opts.Password,
+		"--cluster-username", username,
+		"--cluster-password", password,
 		"--services", "data,index,query,fts,analytics",
 		"--cluster-ramsize", "1024",
 		"--cluster-index-ramsize", "512",
@@ -129,11 +123,11 @@ func InitCBNode(cli *client.Client, id string) error {
 		"--cluster-fts-ramsize", "512",
 		"--cluster-analytics-ramsize", "1024",
 		"--cluster-fts-ramsize", "512",
-		"--cluster-name", opts.ClusterName,
+		"--cluster-name", clusterName,
 		"--index-storage-setting", "default",
 	}
 
-	return ExecCmd(cli, id, cmd)
+	return ExecCmd(ctx, cli, id, cmd)
 }
 
 func WaitUntilReady(ipAddr string) error {
@@ -148,8 +142,8 @@ func WaitUntilReady(ipAddr string) error {
 	return err
 }
 
-func GetCBServerContainers(cli *client.Client) ([]types.Container, error) {
-	containers, err := cli.ContainerList(context.Background(), types.ContainerListOptions{})
+func GetCBServerContainers(ctx context.Context, cli *client.Client, clusterPrefix string) ([]types.Container, error) {
+	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +151,7 @@ func GetCBServerContainers(cli *client.Client) ([]types.Container, error) {
 	var cbContainers []types.Container
 
 	for _, container := range containers {
-		if strings.HasPrefix(container.Names[0], "/"+opts.ClusterName) {
+		if strings.HasPrefix(container.Names[0], "/"+clusterPrefix) {
 			cbContainers = append(cbContainers, container)
 		}
 	}
@@ -165,25 +159,23 @@ func GetCBServerContainers(cli *client.Client) ([]types.Container, error) {
 	return cbContainers, nil
 }
 
-func CleanUpCBServers(cli *client.Client) error {
-	containers, err := GetCBServerContainers(cli)
+func CleanUpCBServers(ctx context.Context, cli *client.Client, clusterPrefix string) error {
+	containers, err := GetCBServerContainers(ctx, cli, clusterPrefix)
 	if err != nil {
 		return err
 	}
 
 	for _, container := range containers {
-		if strings.HasPrefix(container.Names[0], "/"+opts.ClusterName) {
-			fmt.Printf("Removing %s %s\n", container.Names[0], container.Image)
-			duration := 1 * time.Minute
-			err := cli.ContainerStop(context.Background(), container.ID, &duration)
-			if err != nil {
-				return err
-			}
+		fmt.Printf("Removing %s %s\n", container.Names[0], container.Image)
+		duration := 1 * time.Minute
+		err := cli.ContainerStop(ctx, container.ID, &duration)
+		if err != nil {
+			return err
+		}
 
-			err = cli.ContainerRemove(context.Background(), container.ID, types.ContainerRemoveOptions{RemoveVolumes: true})
-			if err != nil {
-				return err
-			}
+		err = cli.ContainerRemove(ctx, container.ID, types.ContainerRemoveOptions{RemoveVolumes: true})
+		if err != nil {
+			return err
 		}
 	}
 
@@ -192,13 +184,15 @@ func CleanUpCBServers(cli *client.Client) error {
 
 func main() {
 	var deleteOnly bool
+
+	var opts = Options{}
+
 	flag.BoolVar(&deleteOnly, "delete", false, "deletes all only resources")
 	flag.StringVar(&opts.ImageName, "image", "couchbase/server:7.1.1", "couchbase server image to be used")
 	flag.IntVar(&opts.NumServers, "num", 3, "total number of server nodes")
 	flag.StringVar(&opts.Username, "username", "Administrator", "Couchbase Server username")
 	flag.StringVar(&opts.Password, "password", "password", "Couchbase Server password")
-	flag.StringVar(&opts.NetworkName, "network-name", "cb-server-network", "Couchbase Server Network")
-	flag.StringVar(&opts.ClusterName, "cluster-name", "cb-cluster", "Couchbase Server Network")
+	flag.StringVar(&opts.Prefix, "prefix", "cb-server", "Prefix to be used for created Couchbase resources")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -207,10 +201,10 @@ func main() {
 		panic(err)
 	}
 
-	if err := CleanUpCBServers(cli); err != nil {
+	if err := CleanUpCBServers(ctx, cli, opts.Prefix); err != nil {
 		panic(err)
 	}
-	err = DeleteProxy(cli)
+	err = DeleteProxy(ctx, cli)
 
 	if err != nil {
 		panic(err)
@@ -220,9 +214,12 @@ func main() {
 		panic(err)
 	}
 
+	networkName := fmt.Sprintf("%s-network", opts.Prefix)
+	clusterName := fmt.Sprintf("%s-cluster", opts.Prefix)
+	// check if the network exists before removing
 	for _, net := range networks {
-		if net.Name == opts.NetworkName {
-			err = cli.NetworkRemove(context.Background(), opts.NetworkName)
+		if net.Name == networkName {
+			err = cli.NetworkRemove(ctx, networkName)
 			if err != nil {
 				panic(err)
 			}
@@ -234,18 +231,14 @@ func main() {
 	}
 
 	out, err := cli.ImagePull(ctx, opts.ImageName, types.ImagePullOptions{})
+
 	if err != nil {
 		panic(err)
 	}
 
-	io.Copy(os.Stdout, out)
-	out, err = cli.ImagePull(ctx, "verb/socat", types.ImagePullOptions{})
-	if err != nil {
-		panic(err)
-	}
+	defer out.Close()
 
-	io.Copy(os.Stdout, out)
-	cbNetwork, err := cli.NetworkCreate(context.Background(), opts.NetworkName, types.NetworkCreate{
+	cbNetworkRes, err := cli.NetworkCreate(ctx, networkName, types.NetworkCreate{
 		CheckDuplicate: true,
 		Driver:         "bridge",
 	})
@@ -253,17 +246,19 @@ func main() {
 		panic(err)
 	}
 
-	defer out.Close()
-	io.Copy(os.Stdout, out)
+	cbNetwork, err := cli.NetworkInspect(ctx, cbNetworkRes.ID, types.NetworkInspectOptions{})
+	if err != nil {
+		panic(err)
+	}
 
 	containers := make([]types.ContainerJSON, 0)
 	for i := 0; i < opts.NumServers; i += 1 {
-		name := fmt.Sprintf("%s-%d.docker", opts.ClusterName, i)
+		name := fmt.Sprintf("%s-%d.docker", opts.Prefix, i)
 		resp, err := cli.ContainerCreate(ctx, &container.Config{
 			Image: opts.ImageName,
 		}, nil, &network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
-				opts.NetworkName: {
+				networkName: {
 					NetworkID: cbNetwork.ID,
 				},
 			},
@@ -286,13 +281,13 @@ func main() {
 		panic(err)
 	}
 
-	ipAddr := containers[0].NetworkSettings.Networks[opts.NetworkName].IPAddress
-	RunProxy(cli, cbNetwork.ID, "8091", ipAddr, "8091")
+	ipAddr := containers[0].NetworkSettings.Networks[networkName].IPAddress
+	RunProxy(ctx, cli, cbNetwork, "8091", ipAddr, "8091")
 
 	WaitUntilReady("localhost")
 
 	for _, container := range containers {
-		err := InitCBNode(cli, container.ID)
+		err := InitCBNode(ctx, cli, container.ID, clusterName, opts.Username, opts.Password)
 		if err != nil {
 			panic(err)
 		}
@@ -303,15 +298,15 @@ func main() {
 		hostnames = append(hostnames, strings.TrimPrefix(container.Name, "/"))
 	}
 
-	err = JoinCBCluster(cli, containers[0].ID, hostnames)
+	err = JoinCBCluster(ctx, cli, containers[0].ID, hostnames, opts.Username, opts.Password)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("done")
 }
 
-func DeleteProxy(cli *client.Client) error {
-	containers, err := cli.ContainerList(context.Background(), types.ContainerListOptions{})
+func DeleteProxy(ctx context.Context, cli *client.Client) error {
+	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{})
 	if err != nil {
 		return err
 	}
@@ -320,12 +315,12 @@ func DeleteProxy(cli *client.Client) error {
 		if strings.HasPrefix(container.Names[0], "/cb-server-proxy") {
 			fmt.Printf("Removing %s %s\n", container.Names[0], container.Image)
 			duration := 1 * time.Minute
-			err := cli.ContainerStop(context.Background(), container.ID, &duration)
+			err := cli.ContainerStop(ctx, container.ID, &duration)
 			if err != nil {
 				return err
 			}
 
-			err = cli.ContainerRemove(context.Background(), container.ID, types.ContainerRemoveOptions{RemoveVolumes: true})
+			err = cli.ContainerRemove(ctx, container.ID, types.ContainerRemoveOptions{RemoveVolumes: true})
 			if err != nil {
 				return err
 			}
@@ -334,14 +329,22 @@ func DeleteProxy(cli *client.Client) error {
 	return nil
 }
 
-func RunProxy(cli *client.Client, networkID string, localPort, targetIP, targetPort string) {
+func RunProxy(ctx context.Context, cli *client.Client, netwrk types.NetworkResource, localPort, targetIP, targetPort string) {
+	out, err := cli.ImagePull(ctx, "verb/socat", types.ImagePullOptions{})
+	if err != nil {
+		panic(err)
+	}
+
+	defer out.Close()
+
+	io.Copy(os.Stdout, out)
 	socatPort := "8080"
 	port, err := nat.NewPort("tcp", socatPort)
 	if err != nil {
 		panic(err)
 	}
 
-	resp, err := cli.ContainerCreate(context.Background(), &container.Config{
+	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image: "verb/socat",
 		Cmd:   []string{fmt.Sprintf("TCP-LISTEN:%s,fork", socatPort), fmt.Sprintf("TCP-CONNECT:%s:%s", targetIP, targetPort)},
 		ExposedPorts: nat.PortSet{
@@ -358,8 +361,8 @@ func RunProxy(cli *client.Client, networkID string, localPort, targetIP, targetP
 		},
 	}, &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
-			opts.NetworkName: {
-				NetworkID: networkID,
+			netwrk.Name: {
+				NetworkID: netwrk.ID,
 			},
 		},
 	}, nil, "cb-server-proxy")
@@ -367,7 +370,7 @@ func RunProxy(cli *client.Client, networkID string, localPort, targetIP, targetP
 		panic(err)
 	}
 
-	if err := cli.ContainerStart(context.Background(), resp.ID, types.ContainerStartOptions{}); err != nil {
+	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
 		panic(err)
 	}
 }
