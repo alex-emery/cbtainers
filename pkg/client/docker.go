@@ -27,6 +27,25 @@ func New() (*CBDockerClient, error) {
 	return &CBDockerClient{cli}, nil
 }
 
+func (cli *CBDockerClient) RebalanceCBCluster(ctx context.Context, containerID, username, password string) error {
+	cmd := []string{
+		"couchbase-cli",
+		"rebalance",
+		"-c",
+		"127.0.0.1",
+		"--username",
+		username,
+		"--password",
+		password,
+	}
+
+	fn := func() error {
+		_, err := cli.ExecCmd(ctx, containerID, cmd)
+		return err
+	}
+
+	return util.WithRetry(fn)
+}
 func (cli *CBDockerClient) JoinCBCluster(ctx context.Context, containerID string, servers []string, username, password string) error {
 	fmt.Printf("Container ID %s is joining %s\n", containerID, strings.Join(servers, ", "))
 	cmd := []string{

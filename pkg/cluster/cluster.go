@@ -151,5 +151,10 @@ func (opts *Options) Run() (*CouchbaseCluster, error) {
 		return nil, err
 	}
 
+	err = client.RebalanceCBCluster(ctx, containers[0].ID, opts.Username, opts.Password)
+	if err != nil {
+		return nil, err
+	}
+
 	return cluster, nil
 }

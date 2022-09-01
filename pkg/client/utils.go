@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -52,10 +53,8 @@ func (cli *CBDockerClient) ExecCmd(ctx context.Context, containerID string, cmd 
 	if err != nil {
 		return "", err
 	}
-	// fmt.Println(outBuf.String())
-	// fmt.Println(errBuf.String())
 	if iresp.ExitCode != 0 {
-		return "", fmt.Errorf("command did not successfully exit: %d", iresp.ExitCode)
+		return "", fmt.Errorf("command did not successfully exit: %s - code: %d\n stderr:%s", strings.Join(cmd, " "), iresp.ExitCode, errBuf.String())
 	}
 
 	return outBuf.String(), nil
