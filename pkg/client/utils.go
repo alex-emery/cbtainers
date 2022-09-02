@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/docker/docker/api/types"
@@ -68,7 +67,10 @@ func (cli *CBDockerClient) ImagePullAndWait(ctx context.Context, imageName strin
 
 	defer out.Close()
 	// this blocks until the image has finished pulling.
-	io.Copy(os.Stdout, out) //nolint:errcheck
-
+	output, err := io.ReadAll(out)
+	if err != nil {
+		return err
+	}
+	cli.logger.Debug(output)
 	return nil
 }

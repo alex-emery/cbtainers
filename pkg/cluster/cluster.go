@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+	"go.uber.org/zap"
 )
 
 type Options struct {
@@ -19,6 +20,7 @@ type Options struct {
 	Size       int
 	Prefix     string
 	DeleteOnly bool
+	logger     *zap.SugaredLogger
 }
 
 type NotFoundError interface {
@@ -32,6 +34,9 @@ type CouchbaseCluster struct {
 }
 
 func (opts *Options) Run() (*CouchbaseCluster, error) {
+	logger, _ := zap.NewProduction()
+	defer logger.Sync() // flushes buffer, if any
+	opts.logger = logger.Sugar()
 
 	cluster := &CouchbaseCluster{}
 
@@ -135,7 +140,7 @@ func (opts *Options) Run() (*CouchbaseCluster, error) {
 	}
 
 	for _, container := range containers {
-		err := client.InitCBNode(ctx, container.ID, clusterName, opts.Username, opts.Password)
+		err := client.InitCBNode(ctx, container, clusterName, opts.Username, opts.Password)
 		if err != nil {
 			return nil, err
 		}
@@ -156,5 +161,6 @@ func (opts *Options) Run() (*CouchbaseCluster, error) {
 		return nil, err
 	}
 
+	opts.logger.Info("done")
 	return cluster, nil
 }

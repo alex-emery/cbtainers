@@ -12,22 +12,31 @@ import (
 	"github.com/docker/docker/api/types/network"
 	dockerClient "github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
+	"go.uber.org/zap"
 )
 
 type CBDockerClient struct {
 	*dockerClient.Client
+
+	logger *zap.SugaredLogger
 }
 
 func New() (*CBDockerClient, error) {
+
+	logger, _ := zap.NewProduction()
+	sugar := logger.Sugar()
 	cli, err := dockerClient.NewClientWithOpts(dockerClient.FromEnv, dockerClient.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, err
 	}
 
-	return &CBDockerClient{cli}, nil
+	client := &CBDockerClient{Client: cli, logger: sugar}
+
+	return client, nil
 }
 
 func (cli *CBDockerClient) RebalanceCBCluster(ctx context.Context, containerID, username, password string) error {
+	cli.logger.Info("rebalancing cluster")
 	cmd := []string{
 		"couchbase-cli",
 		"rebalance",
@@ -47,7 +56,7 @@ func (cli *CBDockerClient) RebalanceCBCluster(ctx context.Context, containerID, 
 	return util.WithRetry(fn)
 }
 func (cli *CBDockerClient) JoinCBCluster(ctx context.Context, containerID string, servers []string, username, password string) error {
-	fmt.Printf("Container ID %s is joining %s\n", containerID, strings.Join(servers, ", "))
+	cli.logger.Info("Connecting clusters")
 	cmd := []string{
 		"couchbase-cli",
 		"server-add",
@@ -66,7 +75,8 @@ func (cli *CBDockerClient) JoinCBCluster(ctx context.Context, containerID string
 	return util.WithRetry(fn)
 }
 
-func (cli *CBDockerClient) InitCBNode(ctx context.Context, containerID string, clusterName, username, password string) error {
+func (cli *CBDockerClient) InitCBNode(ctx context.Context, container types.ContainerJSON, clusterName, username, password string) error {
+	cli.logger.Infof("initialising container %s", container.Name)
 	cmd := []string{
 		"couchbase-cli",
 		"cluster-init",
@@ -85,7 +95,7 @@ func (cli *CBDockerClient) InitCBNode(ctx context.Context, containerID string, c
 	}
 
 	fn := func() error {
-		_, err := cli.ExecCmd(ctx, containerID, cmd)
+		_, err := cli.ExecCmd(ctx, container.ID, cmd)
 		return err
 	}
 	return util.WithRetry(fn)
@@ -116,7 +126,7 @@ func (cli *CBDockerClient) CleanUpCBServers(ctx context.Context, clusterPrefix s
 	}
 
 	for _, container := range containers {
-		fmt.Printf("Removing %s %s\n", container.Names[0], container.Image)
+		cli.logger.Infof("Removing %s %s", container.Names[0], container.Image)
 		duration := 1 * time.Minute
 		err := cli.ContainerStop(ctx, container.ID, &duration)
 		if err != nil {
@@ -140,7 +150,7 @@ func (cli *CBDockerClient) DeleteProxy(ctx context.Context) error {
 
 	for _, container := range containers {
 		if strings.HasPrefix(container.Names[0], "/cb-server-proxy") {
-			fmt.Printf("Removing %s %s\n", container.Names[0], container.Image)
+			cli.logger.Infof("Removing %s %s\n", container.Names[0], container.Image)
 			duration := 1 * time.Minute
 			err := cli.ContainerStop(ctx, container.ID, &duration)
 			if err != nil {
