@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aemery-cb/cbtainers/pkg/util"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
@@ -35,72 +34,6 @@ func New() (*CBDockerClient, error) {
 	return client, nil
 }
 
-func (cli *CBDockerClient) RebalanceCBCluster(ctx context.Context, containerID, username, password string) error {
-	cli.logger.Info("rebalancing cluster")
-	cmd := []string{
-		"couchbase-cli",
-		"rebalance",
-		"-c",
-		"127.0.0.1",
-		"--username",
-		username,
-		"--password",
-		password,
-	}
-
-	fn := func() error {
-		_, err := cli.ExecCmd(ctx, containerID, cmd)
-		return err
-	}
-
-	return util.WithRetry(fn)
-}
-func (cli *CBDockerClient) JoinCBCluster(ctx context.Context, containerID string, servers []string, username, password string) error {
-	cli.logger.Info("Connecting clusters")
-	cmd := []string{
-		"couchbase-cli",
-		"server-add",
-		"--cluster", "127.0.0.1",
-		"--username", username,
-		"--password", password,
-		"--server-add", strings.Join(servers, ","),
-		"--server-add-username", username,
-		"--server-add-password", password,
-	}
-
-	fn := func() error {
-		_, err := cli.ExecCmd(ctx, containerID, cmd)
-		return err
-	}
-	return util.WithRetry(fn)
-}
-
-func (cli *CBDockerClient) InitCBNode(ctx context.Context, container types.ContainerJSON, clusterName, username, password string) error {
-	cli.logger.Infof("initialising container %s", container.Name)
-	cmd := []string{
-		"couchbase-cli",
-		"cluster-init",
-		"-c", "127.0.0.1",
-		"--cluster-username", username,
-		"--cluster-password", password,
-		"--services", "data,index,query,fts,analytics",
-		"--cluster-ramsize", "1024",
-		"--cluster-index-ramsize", "512",
-		"--cluster-eventing-ramsize", "512",
-		"--cluster-fts-ramsize", "512",
-		"--cluster-analytics-ramsize", "1024",
-		"--cluster-fts-ramsize", "512",
-		"--cluster-name", clusterName,
-		"--index-storage-setting", "default",
-	}
-
-	fn := func() error {
-		_, err := cli.ExecCmd(ctx, container.ID, cmd)
-		return err
-	}
-	return util.WithRetry(fn)
-}
-
 func (cli *CBDockerClient) GetCBServerContainers(ctx context.Context, clusterPrefix string) ([]types.Container, error) {
 	containers, err := cli.ContainerList(ctx, types.ContainerListOptions{})
 	if err != nil {
@@ -118,8 +51,98 @@ func (cli *CBDockerClient) GetCBServerContainers(ctx context.Context, clusterPre
 	return cbContainers, nil
 }
 
+func (cli *CBDockerClient) CleanUp(ctx context.Context, prefix string) error {
+
+	errors := []string{}
+
+	if err := cli.DeleteCBServers(ctx, prefix); err != nil {
+		errors = append(errors, err.Error())
+	}
+	if err := cli.DeleteProxy(ctx); err != nil {
+		errors = append(errors, err.Error())
+	}
+	if err := cli.DeleteCBNetworks(ctx, prefix); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	if len(errors) != 0 {
+		return fmt.Errorf("%s", strings.Join(errors, "\n"))
+	}
+
+	return nil
+}
+
+func (cli *CBDockerClient) CreateCBNetwork(ctx context.Context, networkName string) (types.NetworkResource, error) {
+	cbNetworkRes, err := cli.NetworkCreate(ctx, networkName, types.NetworkCreate{
+		CheckDuplicate: true,
+		Driver:         "bridge",
+	})
+	if err != nil {
+		return types.NetworkResource{}, err
+	}
+
+	cbNetwork, err := cli.NetworkInspect(ctx, cbNetworkRes.ID, types.NetworkInspectOptions{})
+	if err != nil {
+		return types.NetworkResource{}, err
+	}
+
+	return cbNetwork, nil
+}
+
+func (cli *CBDockerClient) CreateCBNodes(ctx context.Context, imgName string, prefix string, cbNet types.NetworkResource, size int) ([]types.ContainerJSON, error) {
+	containers := make([]types.ContainerJSON, 0)
+	for i := 0; i < size; i += 1 {
+		name := fmt.Sprintf("%s-%d.docker", prefix, i)
+		resp, err := cli.ContainerCreate(ctx, &container.Config{
+			Image: imgName,
+		}, nil, &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				cbNet.Name: {
+					NetworkID: cbNet.ID,
+				},
+			},
+		}, nil, name)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
+			return nil, err
+		}
+		container, err := cli.ContainerInspect(ctx, resp.ID)
+		if err != nil {
+			return nil, err
+		}
+		containers = append(containers, container)
+	}
+
+	return containers, nil
+}
+
+// Deletes all networks starting with the cluster prefix.
+func (cli *CBDockerClient) DeleteCBNetworks(ctx context.Context, prefix string) error {
+	networks, err := cli.NetworkList(ctx, types.NetworkListOptions{})
+	if err != nil {
+		return err
+	}
+	errs := []string{}
+
+	for _, network := range networks {
+		if strings.HasPrefix(network.Name, prefix) {
+			if err := cli.NetworkRemove(ctx, network.ID); err != nil {
+				errs = append(errs, err.Error())
+			}
+		}
+	}
+	if len(errs) != 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "\n"))
+	}
+
+	return nil
+}
+
 // Deletes all docker containers that have the cluster prefix.
-func (cli *CBDockerClient) CleanUpCBServers(ctx context.Context, clusterPrefix string) error {
+func (cli *CBDockerClient) DeleteCBServers(ctx context.Context, clusterPrefix string) error {
 	containers, err := cli.GetCBServerContainers(ctx, clusterPrefix)
 	if err != nil {
 		return err
@@ -166,6 +189,7 @@ func (cli *CBDockerClient) DeleteProxy(ctx context.Context) error {
 	return nil
 }
 
+// Creates a container to act as a proxy, forwarding remote ports on another container to local ports on the host.
 func (cli *CBDockerClient) RunProxy(ctx context.Context, netwrk types.NetworkResource, localPort, targetIP, targetPort string) error {
 	err := cli.ImagePullAndWait(ctx, "verb/socat", types.ImagePullOptions{})
 	if err != nil {

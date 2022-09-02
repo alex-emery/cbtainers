@@ -21,21 +21,20 @@ func TestCreate(t *testing.T) {
 		ImageName: "couchbase/server:7.1.1",
 	}
 
+	ctx := context.Background()
+
 	cluster, err := opts.Run()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		for _, cleanup := range cluster.CleanUp {
-			cleanup()
-		}
+		cluster.CleanUp(ctx)
 	}()
 
 	client, err := client.New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
 	// check cluster size
 	containers, err := client.GetCBServerContainers(ctx, opts.Prefix)
 	if err != nil {
