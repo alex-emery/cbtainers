@@ -10,3 +10,6 @@ By default a 3 node cluster will be created.
 ```
 go run .
 ```
+
+## Todo:
+- [ ] Cleanup created resources if cluster creation fails.
